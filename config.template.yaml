@@ -1,0 +1,94 @@
+allow-lan: true
+tcp-concurrent: true
+unified-delay: true
+bind-address: '*'
+dns:
+  default-nameserver:
+  - 223.5.5.5
+  - 119.29.29.29
+  enable: true
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  fake-ip-filter:
+  - '+.lan'
+  - '+.local'
+  - '169.254.*'
+  fallback:
+  - https://dns.cloudflare.com/dns-query
+  - https://dns.google/dns-query
+  fallback-filter:
+    geoip: true
+    geoip-code: CN
+    ipcidr:
+    - 240.0.0.0/4
+    - 0.0.0.0/32
+  ipv6: false
+  nameserver:
+  - https://doh.pub/dns-query
+  - https://dns.alidns.com/dns-query
+  use-hosts: true
+external-controller: 0.0.0.0:9090
+log-level: info
+mixed-port: 7897
+mode: rule
+profile:
+  store-fake-ip: true
+  store-selected: true
+proxies:
+- name: My-Exit-SOCKS
+  type: socks5
+  server: ${EXIT_SERVER}
+  port: ${EXIT_PORT}
+  username: ${EXIT_USER}
+  password: ${EXIT_PASS}
+  udp: false
+  dialer-proxy: 第一跳节点池
+proxy-groups:
+- name: Proxy
+  type: select
+  proxies:
+  - My-Exit-SOCKS
+  - 第一跳节点池
+  - DIRECT
+- name: 第一跳节点池  # 全节点 load-balance 轮询：分散连接、自动跳过死节点、不跳变
+  type: load-balance
+  use:
+  - lelian_proxies
+  url: http://www.gstatic.com/generate_204
+  interval: 180
+  strategy: round-robin
+  lazy: false
+proxy-providers:
+  lelian_proxies:
+    type: http
+    url: "${SUBSCRIBE_URL}"
+    path: /root/.config/mihomo/proxy_provider/lelian_proxies.yaml
+    interval: 86400
+    health-check:
+      enable: true
+      url: http://www.gstatic.com/generate_204
+      interval: 60
+rules:
+# ── 丢弃/直连本地与伪地址垃圾流量：绝不能走付费代理链 ──
+- IP-CIDR,169.254.0.0/16,REJECT,no-resolve      # 链路本地 / 云元数据(169.254.169.254) 探测垃圾
+- IP-CIDR,224.0.0.0/4,REJECT,no-resolve         # 组播
+- IP-CIDR,255.255.255.255/32,REJECT,no-resolve  # 广播
+- IP-CIDR,100.64.0.0/10,DIRECT,no-resolve       # 运营商级 NAT (CGNAT)
+- DOMAIN,ilinkai.weixin.qq.com,DIRECT
+- DOMAIN-SUFFIX,weixin.qq.com,DIRECT
+- DOMAIN-SUFFIX,openai.com,Proxy
+- DOMAIN-SUFFIX,chatgpt.com,Proxy
+- DOMAIN-SUFFIX,oaistatic.com,Proxy
+- DOMAIN-SUFFIX,oaiusercontent.com,Proxy
+- DOMAIN-SUFFIX,anthropic.com,Proxy
+- DOMAIN-SUFFIX,claude.ai,Proxy
+- DOMAIN-SUFFIX,claude.com,Proxy
+- DOMAIN-SUFFIX,claudeusercontent.com,Proxy
+- DOMAIN-SUFFIX,cn,DIRECT
+- GEOIP,CN,DIRECT
+- IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
+- IP-CIDR,172.16.0.0/12,DIRECT,no-resolve
+- IP-CIDR,192.168.0.0/16,DIRECT,no-resolve
+- IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
+- MATCH,Proxy
+secret: ${API_SECRET}

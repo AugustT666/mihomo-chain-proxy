@@ -1,0 +1,10 @@
+services:
+  mihomo:
+    image: metacubex/mihomo:latest   # 建议锁定具体版本，如 metacubex/mihomo:v1.19.21
+    container_name: mihomo
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      # 相对路径：以本 compose 文件所在目录为基准
+      - ./config.yaml:/root/.config/mihomo/config.yaml
+      - ./proxy_provider:/root/.config/mihomo/proxy_provider

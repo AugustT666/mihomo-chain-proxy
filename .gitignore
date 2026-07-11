@@ -1,0 +1,9 @@
+# 凭据与生成文件 — 不入库
+vars.env
+config.yaml
+proxy_provider/lelian_proxies.yaml
+
+# 备份 / 导出 / 一次性产物（非项目源）
+*.bak
+*.bak.*
+*.tar.gz
