@@ -13,11 +13,8 @@ dns:
   - '+.lan'
   - '+.local'
   - '169.254.*'
-  fallback:
-  - https://dns.cloudflare.com/dns-query
-  - https://dns.google/dns-query
   fallback-filter:
-    geoip: true
+    geoip: false
     geoip-code: CN
     ipcidr:
     - 240.0.0.0/4
@@ -26,6 +23,8 @@ dns:
   nameserver:
   - https://doh.pub/dns-query
   - https://dns.alidns.com/dns-query
+  proxy-server-nameserver:
+  - ${PROXY_DNS}
   use-hosts: true
 external-controller: 0.0.0.0:9090
 log-level: info

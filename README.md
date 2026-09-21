@@ -9,6 +9,7 @@
 - **第一跳节点池**：从机场订阅拉取节点，用 `load-balance` 把连接**分散到多个存活节点**，自动跳过失效节点、不因延迟波动频繁切换。
 - **固定出口**：所有流量最终从一个你指定的 SOCKS5 出口发出（出口 IP 稳定）。
 - 国内域名 / GEOIP CN / 内网地址直连；本地伪地址与云元数据探测（169.254 等）直接丢弃，不浪费付费出口。
+- **节点域名解析器自动选择**：`boot.sh` 启动 mihomo 后台立即跑一次 `dns-select.sh`，之后按 `RESELECT_INTERVAL`（默认 1800s）定期复查。机场节点域名若由多 IP 轮询解析（如 GTM），不同 DoH 解析器能连上的 IP 不同；脚本对候选解析器逐一采样实测，按各解析器下"可达节点数"加权评分，选出可达率最高的写入 `vars.env:PROXY_DNS` 并同步 `config.yaml`，带 15% 迟滞避免抖动。全部解析器都不可用时保持现状，不做无意义切换。
 
 > 引擎用官方镜像 `metacubex/mihomo`，本项目只提供**配置**。密钥（订阅链接、出口凭据、API 密钥）通过 `vars.env` 注入，**不包含在本导出中**——请自行填写。
 
@@ -34,8 +35,9 @@ curl -x socks5h://127.0.0.1:7897 -s https://www.gstatic.com/generate_204 -o /dev
 | 文件 | 作用 |
 |------|------|
 | `config.template.yaml` | 带 `${VAR}` 占位符的配置骨架（路由规则、代理组、DNS） |
-| `vars.env` | 占位符的真实取值（订阅链接、出口凭据、API 密钥）——**自己创建，勿分享** |
+| `vars.env` | 占位符的真实取值（订阅链接、出口凭据、API 密钥、自动挑选的 `PROXY_DNS`）——**自己创建，勿分享** |
 | `update_subscription.sh` | 用 `envsubst` 渲染模板 → 有变更时热重载 → 刷新订阅节点 |
+| `boot.sh` / `dns-select.sh` | 容器入口包装：秒级启动 mihomo + 后台自动选解析器（可选，不需要可去掉 compose 里的 `entrypoint`） |
 
 改动方式：
 - **换订阅 / 换出口** → 编辑 `vars.env` → `bash update_subscription.sh`

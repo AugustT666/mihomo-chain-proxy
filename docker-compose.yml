@@ -1,10 +1,15 @@
 services:
+  # 入口包装：启动前自动挑选节点域名解析器、后台定期重选（见 boot.sh / dns-select.sh）
   mihomo:
     image: metacubex/mihomo:latest   # 建议锁定具体版本，如 metacubex/mihomo:v1.19.21
     container_name: mihomo
     restart: unless-stopped
     network_mode: host
+    entrypoint: ["/bin/sh", "/vol1/mihomo/boot.sh"]
+    environment:
+      - SAFE_PATHS=/vol1/mihomo
     volumes:
-      # 相对路径：以本 compose 文件所在目录为基准
+      # 相对路径：以本 compose 文件所在目录为基准，挂到 boot.sh 期望的 /vol1/mihomo
+      - .:/vol1/mihomo
       - ./config.yaml:/root/.config/mihomo/config.yaml
       - ./proxy_provider:/root/.config/mihomo/proxy_provider
