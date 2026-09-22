@@ -95,17 +95,24 @@ AIRPORT_GROUP_MAP=机场主组名=Proxy
 
 > 映射表刻意放在 `vars.env`（不入库）而非代码里 —— 既为脱敏，也让**换机场时只改一行配置**。
 
+### 订阅是不可信输入
+
+规则来自远端订阅，本项目的处理前提是**不可信**。`sync_airport_rules.sh` 因此：
+
+1. 规则**类型**必须在已知白名单内（光校验字符集不够——`1BADTYPE` 这种字符集合法但
+   mihomo 不认识的类型会让整份配置被拒）；
+2. 规则**目标**必须在已知策略组/内置动作白名单内，未知目标**逐条跳过**而非中止
+   （一条畸形规则不该让配置再也无法更新）；
+3. 写入 YAML 时**转义单引号**——否则 payload 里一个 `'` 就能撑破引号边界造成配置注入；
+4. 产出片段要过一遍 **YAML 解析自检**；
+5. 跳过比例 > 5% 视为订阅格式变化或被篡改，**中止不写盘**。
+
 ## TUN 全局代理
 
 只靠 `http_proxy` 环境变量不算全局：**不认这个变量的程序、Docker 容器内的流量、
 非 HTTP 协议**都会漏出去直连。TUN 才能接管全部流量。
 
-容器需要：
-
-```yaml
-cap_add: [NET_ADMIN]
-devices: ["/dev/net/tun:/dev/net/tun"]
-```
+容器需要 `network_mode: host` + `NET_ADMIN` + `/dev/net/tun` 三样，代价见下方安全说明。
 
 ⚠️ **如果你是通过 SSH 远程管理这台机器的，`route-exclude-address` 是安全底线**：
 必须把管理网段排除在 TUN 之外，否则隧道一抖动你就再也连不上、只能物理接触机器。
@@ -145,13 +152,50 @@ cron 下会走 `/usr/bin/` —— 两处行为不一致时先怀疑这个）。
 
 ## 安全说明
 
-- `vars.env`、`config.yaml`、`proxy_provider/lelian_proxies.yaml`、`airport_rules.inc`
-  均已列入 `.gitignore`。**首次提交前请自行确认**：`git status` 里不应出现它们。
-- 本项目默认不开 mixed-port 认证（`authentication`）。**若部署在不受信任的网络里，
-  请自行开启**，否则同网段任何人都能把它当免费代理用，消耗你的付费流量、
+请在使用前读一遍。这个项目为了"宿主机全局代理"付出了实实在在的权限代价。
+
+### 1. 容器拥有宿主机的网络控制权（权限提升）
+
+`network_mode: host` + `cap_add: NET_ADMIN` + `/dev/net/tun` 的组合，
+意味着**容器可以在宿主机上创建/删除网卡、改路由表**。
+已实证：在容器内执行 `ip link add <name> type dummy` 能成功。
+
+换句话说，**这个容器在网络维度上约等于宿主机的 root**。
+这是宿主机级 TUN 的必然代价，没有更小的权限组合能做到。
+
+两条纪律：
+- **只使用你信任的镜像**（见第 2 条）；
+- 不要把这个容器的端口暴露到不受信任的网络。
+
+如果你不需要宿主机全局代理，删掉 compose 里那三处即可。
+
+### 2. 镜像来自第三方源且未固定版本（供应链）
+
+- `docker.1ms.run` 是**第三方镜像源**（为绕开国内拉不到 Docker Hub 的问题），
+  不是官方 registry。理论上它可以返回被替换过的镜像内容。
+  换成官方：`image: metacubex/mihomo:latest`。
+- `:latest` **不可复现、无法审计**。生产环境建议按 **digest 固定**，那样镜像源也无法替换内容：
+  ```yaml
+  image: docker.1ms.run/metacubex/mihomo@sha256:<digest>
+  ```
+  取 digest：`docker image inspect <image> --format '{{index .RepoDigests 0}}'`。
+  代价是内核不再自动更新，需要手动 bump。
+
+### 3. 开放代理与 API 暴露
+
+- 默认**不开** mixed-port 认证（`authentication`）。若部署在不受信任的网络里，
+  **请自行开启**——否则同网段任何人都能把它当免费代理用，消耗你的付费流量、
   并以你的出口身份发出流量。
 - `external-controller` 默认绑 `0.0.0.0:9090`。API 密钥请用随机长串
-  （`openssl rand -hex 24`），并且**不要把密钥填进第三方托管的前端页面**。
+  （`openssl rand -hex 24`），并且**不要把密钥填进第三方托管的前端页面**
+  （那等于把密钥交给那个站点的运营者）；建议本地跑 yacd/metacubexd 或使用镜像自带 dashboard。
+
+### 4. 不要提交密钥
+
+`vars.env`、`config.yaml`、`proxy_provider/lelian_proxies.yaml`、`airport_rules.inc`
+均已列入 `.gitignore`。**提交前请自行确认**：`git status` 里不应出现它们。
+发布/同步前建议做一次凭据审计——用"从 `vars.env` 读出真实值反查待发布文件"的方式，
+比逐条人工看可靠得多（本项目就是这么做的）。
 
 ## 许可与免责
 

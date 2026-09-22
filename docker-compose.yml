@@ -2,20 +2,51 @@ services:
   # 入口包装：目前只做 exec /mihomo（自动挑选解析器的循环已于 2026-09-22 移除，
   # 详见 boot.sh 顶部注释与 MAINTENANCE.md）
   mihomo:
+    # ══════════════════════════════════════════════════════════════════════
+    # 镜像 —— 两个已知风险，用之前请知情
+    #
+    #  1) `docker.1ms.run` 是**第三方镜像源**，不是官方 registry。用它是因为国内
+    #     常常拉不到 Docker Hub。但理论上该镜像源可以返回被替换过的镜像内容。
+    #     介意的话换成官方（或在能直连 Docker Hub 的机器上拉）：
+    #         image: metacubex/mihomo:latest
+    #
+    #  2) `:latest` **未固定版本**：每次拉取都可能不同 —— 不可复现、无法审计。
+    #     生产环境建议按 digest 固定，那样镜像源也无法替换内容：
+    #         image: docker.1ms.run/metacubex/mihomo@sha256:739edd73a352d6beb82fad6790ef9d417a4d6f061584cc3cab1bd4536d1c60e5
+    #     （上面这个是本机 2026-09-22 实测运行中的 digest，对应 2026-09-14 构建的 v1.19.31。
+    #       固定之后内核不再自动更新，需要手动 bump digest。）
+    # ══════════════════════════════════════════════════════════════════════
     image: docker.1ms.run/metacubex/mihomo:latest
     container_name: mihomo
     restart: unless-stopped
+
+    # ══════════════════════════════════════════════════════════════════════
+    # 权限 —— 这组设置让容器拥有**宿主机的网络控制权**
+    #
+    # 已实证：在容器内可以创建/删除宿主机网卡（`ip link add ... type dummy`）。
+    # 也就是说，**这个容器在网络维度上约等于宿主机的 root**。
+    #
+    # 这是 TUN 全局代理的必然代价：要在宿主机层面接管路由，就必须能改宿主机的
+    # 网络栈，没有更小的权限组合能做到"宿主机全局代理"。
+    #
+    # 因此两条纪律：
+    #   * 只使用你信任的镜像（见上方镜像一节的说明）；
+    #   * 不要把这个容器的端口暴露到不受信任的网络（本项目默认 allow-lan: true
+    #     且 mixed-port 无认证——校园网/公共网络下请自行加 authentication）。
+    #
+    # 如果你**不需要**宿主机全局代理，只想让容器内的程序走代理：
+    # 删掉 network_mode / cap_add / devices 这三处即可（TUN 就用不了，
+    # 改用 mixed-port 让程序显式指向 127.0.0.1:7897）。
+    # ══════════════════════════════════════════════════════════════════════
     network_mode: host
-    entrypoint: ["/bin/sh", "/vol1/mihomo/boot.sh"]
-    environment:
-      - SAFE_PATHS=/vol1/mihomo
-    # ── TUN 全局代理所需（config.template.yaml 的 tun 段）──
-    # network_mode: host 让 mihomo 工作在宿主 netns，因此 TUN 接口与路由规则
-    # 直接作用于宿主机，需要这两项能力：
     cap_add:
       - NET_ADMIN          # 建 TUN 接口、改路由表
     devices:
       - /dev/net/tun:/dev/net/tun
+
+    entrypoint: ["/bin/sh", "/vol1/mihomo/boot.sh"]
+    environment:
+      - SAFE_PATHS=/vol1/mihomo
     volumes:
       - /home/august/mihomo-local:/vol1/mihomo
       - /home/august/mihomo-local/config.yaml:/root/.config/mihomo/config.yaml
