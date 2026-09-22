@@ -1,89 +1,36 @@
 #!/bin/sh
-# boot.sh — mihomo 容器的入口包装（全自动，无需人工干预）
+# boot.sh — mihomo 容器的入口包装
 #
-#   1) 立即启动 mihomo —— 不因挑选解析器而拖慢容器启动
-#   2) 后台立刻做一次挑选，之后每 RESELECT_INTERVAL 秒复查
-#      只有真的切换了才热重载；当前解析器健康时什么都不做
+# 这个文件曾经包含一个"后台定期自动挑选 DoH 解析器"的循环（每 1800s 调用
+# dns-select.sh，切换后热重载）/ 已于 2026-09-22 移除，原因见 MAINTENANCE.md：
 #
-# 只依赖 busybox：sh/sed/awk/wget/nc
+#   1) 它要修的故障当前不存在。它的设计目标是"某域名下整批节点因解析到被墙 IP
+#      而集体失效"，但实测失效形态是【零散单点】：承载 14 / 6 个节点的大域名
+#      各有 13 / 5 个活，真正"全灭"的几个域名各只承载 1 个节点，其中还有一个是
+#      IP 型节点（脚本本来就跳过 IP 型 server）。
+#      零散单点由 proxy-provider 的 60s 健康检查自动剔除，无需解析器选择。
+#
+#   2) 它在泄漏僵尸进程。每轮泄漏 67 个 ssl_client（busybox wget 做 HTTPS 时的
+#      TLS 助手进程，管道下游提前退出导致它成为孤儿，而容器 PID 1 是 mihomo，
+#      Go 程序不会回收别人的孩子）。每 30 分钟一轮 ≈ 3200 个/天，无界增长。
+#      实测：开机 47 分钟已堆积 134 个，两簇各 67 个，正好对应两次运行。
+#
+#   3) 它直接改写"生成物" config.yaml，与定时渲染 config.template.yaml 的流程
+#      存在同文件写竞争。
+#
+# dns-select.sh 保留为**按需手动**的诊断工具（排查"批量节点掉线"时用）：
+#
+#   推荐在宿主机上跑（真实 shell 会正常回收子进程，不产生僵尸）：
+#     cd /home/august/mihomo-local && CFG_DIR=$PWD ./dns-select.sh --dry-run
+#
+#   或在容器内跑（会留约 67 个僵尸，需重启容器清理）：
+#     docker exec mihomo /vol1/mihomo/dns-select.sh --dry-run
+#
+# 只依赖 busybox：sh
 
 set -u
 
-CFG_DIR=/vol1/mihomo
-VARS="$CFG_DIR/vars.env"
-SELECTOR="$CFG_DIR/dns-select.sh"
-API_HOST=127.0.0.1
-API_PORT=9090
-API_PATH=/configs
-
 log() { echo "[boot] $*"; }
 
-api_token() {
-    sed -n 's/^API_SECRET=//p' "$VARS" 2>/dev/null | head -1
-}
-
-# 等 mihomo 的 API 起来（最多约 60s）
-wait_api() {
-    i=0
-    while [ "$i" -lt 60 ]; do
-        if nc -z -w 2 "$API_HOST" "$API_PORT" >/dev/null 2>&1; then return 0; fi
-        i=$((i + 1))
-        sleep 1
-    done
-    return 1
-}
-
-# 用裸 HTTP PUT 触发 mihomo 热重载
-# （busybox 的 wget 只支持 GET/POST，不支持 PUT，所以走 nc）
-reload() {
-    tok=$(api_token)
-    if [ -z "$tok" ]; then
-        log "拿不到 API_SECRET，跳过热重载"
-        return 1
-    fi
-    if ! wait_api; then
-        log "mihomo API 未就绪，跳过热重载"
-        return 1
-    fi
-    body='{"path":"/root/.config/mihomo/config.yaml","force":false}'
-    len=$(printf '%s' "$body" | wc -c)
-    resp=$(
-        {
-            printf 'PUT %s HTTP/1.1\r\n' "$API_PATH"
-            printf 'Host: %s:%s\r\n' "$API_HOST" "$API_PORT"
-            printf 'Authorization: Bearer %s\r\n' "$tok"
-            printf 'Content-Type: application/json\r\n'
-            printf 'Content-Length: %s\r\n' "$len"
-            printf 'Connection: close\r\n\r\n'
-            printf '%s' "$body"
-        } | nc -w 5 "$API_HOST" "$API_PORT" 2>/dev/null | head -1
-    )
-    case "$resp" in
-        *204*) log "热重载成功"; return 0 ;;
-        *)     log "热重载返回: ${resp:-（无响应）}"; return 1 ;;
-    esac
-}
-
-# 跑一次挑选；切换过（退出码 0）才热重载
-run_select() {
-    [ -x "$SELECTOR" ] || { log "找不到 $SELECTOR，跳过自动挑选"; return 0; }
-    if "$SELECTOR"; then
-        log "解析器已切换，热重载 mihomo"
-        reload
-    fi
-}
-
-# ── 后台：立即挑一次，之后定期复查 ──
-INTERVAL=${RESELECT_INTERVAL:-1800}
-(
-    log "后台自动挑选已启动（首次立即执行，之后每 ${INTERVAL}s）"
-    run_select
-    while true; do
-        sleep "$INTERVAL"
-        run_select
-    done
-) &
-
-# ── 立即启动 mihomo ──
-log "启动 mihomo"
+log "启动 mihomo（自动 DNS 挑选已停用；如需诊断请手动运行 dns-select.sh）"
 exec /mihomo

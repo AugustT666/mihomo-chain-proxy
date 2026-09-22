@@ -1,7 +1,7 @@
 #!/bin/sh
 # dns-select.sh — 自动挑选“当前最能连上”的 DoH 解析器
 #
-# 背景：机场节点域名（如 wdz2.ty7.fun）由 GTM 轮询一组 IP，
+# 背景：机场节点域名（如 node.example-airport.com）由 GTM 轮询一组 IP，
 #       不同解析器问到的 IP 不同，其中一部分被墙。
 #       本脚本对候选解析器逐一采样、把解析出的 IP 拿去实测，
 #       选可达率最高的那个写进 vars.env，并同步 config.yaml。

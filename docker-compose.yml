@@ -1,15 +1,22 @@
 services:
-  # 入口包装：启动前自动挑选节点域名解析器、后台定期重选（见 boot.sh / dns-select.sh）
+  # 入口包装：目前只做 exec /mihomo（自动挑选解析器的循环已于 2026-09-22 移除，
+  # 详见 boot.sh 顶部注释与 MAINTENANCE.md）
   mihomo:
-    image: metacubex/mihomo:latest   # 建议锁定具体版本，如 metacubex/mihomo:v1.19.21
+    image: docker.1ms.run/metacubex/mihomo:latest
     container_name: mihomo
     restart: unless-stopped
     network_mode: host
     entrypoint: ["/bin/sh", "/vol1/mihomo/boot.sh"]
     environment:
       - SAFE_PATHS=/vol1/mihomo
+    # ── TUN 全局代理所需（config.template.yaml 的 tun 段）──
+    # network_mode: host 让 mihomo 工作在宿主 netns，因此 TUN 接口与路由规则
+    # 直接作用于宿主机，需要这两项能力：
+    cap_add:
+      - NET_ADMIN          # 建 TUN 接口、改路由表
+    devices:
+      - /dev/net/tun:/dev/net/tun
     volumes:
-      # 相对路径：以本 compose 文件所在目录为基准，挂到 boot.sh 期望的 /vol1/mihomo
-      - .:/vol1/mihomo
-      - ./config.yaml:/root/.config/mihomo/config.yaml
-      - ./proxy_provider:/root/.config/mihomo/proxy_provider
+      - /home/august/mihomo-local:/vol1/mihomo
+      - /home/august/mihomo-local/config.yaml:/root/.config/mihomo/config.yaml
+      - /home/august/mihomo-local/proxy_provider:/root/.config/mihomo/proxy_provider

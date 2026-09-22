@@ -3,7 +3,29 @@ vars.env
 config.yaml
 proxy_provider/lelian_proxies.yaml
 
+# 机场规则抽取产物：由**你自己的**订阅生成，内含你所用机场的规则集
+# （其中可能有与其品牌相关的目标域名）。同 config.yaml 一样属生成物，
+# 且不适合再分发，故不入库。缺失时渲染会提示，rules 段 4 的国内直连仍兜底。
+airport_rules.inc
+
 # 备份 / 导出 / 一次性产物（非项目源）
+#
+# 注意：`config.yaml` 是**渲染后**的产物，内含 EXIT_PASS / API_SECRET / SUBSCRIBE_URL。
+# 漏掉任何一种备份命名，都可能在 `git add -A` 时把凭据推到**公开**仓库。
+# 因此这里用组合模式覆盖所有见过的命名：
+#   config.yaml.bak-20260910      ← 曾被 *.bak / *.bak.* / config.yaml.bak.* 全部漏掉
+#   config.yaml.bak.20260910
+#   config.template.yaml.bak-20260910   （模板无凭据，但一并忽略更省心）
+#   .bak-20260913/                ← 目录形式的历史备份
 *.bak
 *.bak.*
+*.bak-*
+.bak-*/
+config.yaml.bak.*
+export/
 *.tar.gz
+ROLLBACK.sh
+常用命令
+
+# 本目录之外的快照（如 /home/august/mihomo-local.bak-*/），仅作说明；
+# 若在其中 git init，请确认至少继承本文件的 *.bak-* 规则。
