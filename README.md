@@ -1,202 +1,151 @@
-# Mihomo 链式代理配置
+# mihomo-chain-proxy
 
-一套基于 [mihomo (Clash.Meta)](https://github.com/MetaCubeX/mihomo) 的**链式代理**配置，
-容器化部署、无人值守。
+基于 [mihomo (Clash.Meta)](https://github.com/MetaCubeX/mihomo) 的链式代理配置。
+容器化部署，用机场节点做中转、用固定 SOCKS5 出口做落地，配置自动更新。
+
+## 特性
+
+- **链式代理** — 出口经第一跳节点连接（原生 `dialer-proxy`），出网 IP 稳定
+- **规则合并** — 合并机场订阅自带的规则集与自有规则
+- **TUN 全局代理** — 不依赖 `http_proxy`，不认代理变量的程序也能被接管
+- **自动热重载** — cron 定时刷新订阅、重组规则、重载配置
+- **渲染校验** — 关键字段非空 + YAML 解析 + 热重载失败自动回滚
+
+## 架构
 
 ```
-[设备] → mihomo :7897 → 第一跳节点池(廉价机场订阅) → 固定出口(SOCKS5) → Internet
+[设备] → mihomo :7897 → 第一跳节点池(机场订阅) → 固定出口(SOCKS5) → Internet
 ```
 
-即代理圈说的「**中转 + 落地**」：第一跳负责"怎么从墙内出去"（线路质量），
-固定出口负责"出去后以哪个 IP 出现"（身份稳定）。
-
-> 引擎用官方镜像 `metacubex/mihomo`，本项目**只提供配置和脚本**，不含任何自建内核。
-> 密钥（订阅链接、出口凭据、API 密钥）全部通过 `vars.env` 注入，**不入库**。
-
-## 它解决/覆盖的事
-
-| 能力 | 说明 |
+| 组件 | 说明 |
 |---|---|
-| **链式代理** | 靠原生 `dialer-proxy` + `load-balance` + `proxy-provider`，零自研代码 |
-| **机场规则合并** | 机场订阅自带完整规则集，但以 `proxy-provider` 引用时 mihomo **只读节点列表、丢弃规则**。本项目把规则捞回来与自有规则按优先级合并（详见下） |
-| **TUN 全局代理** | 让**不认 `http_proxy` 环境变量**的程序也走代理（含 Docker 容器内流量、非 HTTP 协议）。自带防自锁配置 |
-| **定时热重载** | cron 每小时：刷新订阅 → 重新抽取规则 → 渲染 → 热重载。机场更新规则后自动跟上 |
-| **渲染安全闸门** | 关键字段非空校验 + YAML 解析闸门 + 热重载失败自动回滚 |
+| 第一跳节点池 | `load-balance` 轮询机场节点，失效节点由健康检查自动剔除 |
+| 固定出口 | `My-Exit-SOCKS` 经 `dialer-proxy` 从第一跳出去，出网 IP 固定 |
+| 分流 | 国内域名 / GEOIP CN / 内网地址直连；本地伪地址与云元数据探测直接丢弃 |
 
 ## 快速开始
 
+### 1. 准备变量
+
 ```bash
-git clone <this-repo> && cd <repo>
-
-# 1. 填密钥（vars.env 已在 .gitignore 中，不会被提交）
-cp vars.env.example vars.env
-chmod 600 vars.env
-nano vars.env      # 填 SUBSCRIBE_URL / EXIT_* / API_SECRET / PROXY_DNS / AIRPORT_GROUP_MAP
-
-# 2. 渲染配置并启动
-bash update_subscription.sh      # 渲染 config.yaml（若容器已在运行则热重载）
-docker compose up -d
-
-# 3. 验证（应返回 204）
-curl -x http://127.0.0.1:7897 -s -o /dev/null -w "%{http_code}\n" \
-     http://www.gstatic.com/generate_204
+git clone https://github.com/AugustT666/mihomo-chain-proxy.git
+cd mihomo-chain-proxy
+cp vars.env.example vars.env && chmod 600 vars.env
 ```
 
-`vars.env` 的 7 个键缺一不可，脚本会强制校验：
-`SUBSCRIBE_URL` `EXIT_SERVER` `EXIT_PORT` `EXIT_USER` `EXIT_PASS` `API_SECRET` `PROXY_DNS`
-外加 `AIRPORT_GROUP_MAP`（见下）。
+编辑 `vars.env`：
 
-> **绝不要用裸 `envsubst` 渲染模板。** `envsubst` 从环境变量取值，而 `vars.env` 的值
-> 并未 export 到环境——直接渲染会把所有占位符静默替换成空字符串，
-> 出口节点/订阅链接/密钥全部被抹掉，代理链当场断裂且**不报任何错**。
-> 一律走 `update_subscription.sh`（它会先 export 再渲染，并做校验）。
+| 变量 | 说明 |
+|---|---|
+| `SUBSCRIBE_URL` | 机场订阅链接 |
+| `EXIT_SERVER` `EXIT_PORT` `EXIT_USER` `EXIT_PASS` | 出口 SOCKS5 凭据 |
+| `API_SECRET` | mihomo API 密钥（也是面板密码），建议 `openssl rand -hex 24` |
+| `PROXY_DNS` | 解析代理服务器域名用的 DoH 地址 |
+| `AIRPORT_GROUP_MAP` | 机场策略组 → 本项目策略组的映射，格式 `机场组=Proxy` |
+
+### 2. 启动
+
+```bash
+bash update_subscription.sh     # 渲染 config.yaml
+docker compose up -d
+```
+
+### 3. 验证
+
+```bash
+curl -x http://127.0.0.1:7897 -s -o /dev/null -w "%{http_code}\n" \
+     http://www.gstatic.com/generate_204        # 期望 204
+```
+
+## 配置
+
+`config.yaml` 是**生成文件**，不要直接编辑。改这两个源文件：
+
+| 文件 | 改什么 |
+|---|---|
+| `config.template.yaml` | 路由规则、代理组、DNS、TUN 开关 |
+| `vars.env` | 订阅链接、出口凭据、API 密钥 |
+
+改完运行 `bash update_subscription.sh` 生效 —— 它通过 API 热重载，不需要重启容器。
+只有改 `docker-compose.yml` 才需要 `docker compose up -d` 重建。
+
+### 规则顺序
+
+`rules` 分四段。mihomo 是**首个匹配生效**，所以顺序就是优先级：
+
+| 段 | 内容 |
+|---|---|
+| 1 | 本地与垃圾流量：组播/广播 REJECT，内网段直连 |
+| 2 | 自有规则：微信直连，AI 域名走代理 |
+| 3 | 机场规则（自动生成，保持机场原始顺序） |
+| 4 | 国内直连 + `MATCH,Proxy` 兜底 |
+
+第 2 段必须排在第 3 段之前：机场把自己的 `GEOIP,CN,DIRECT` 放在规则块末尾当兜底，
+自有规则若在其后，AI 域名解析到 CN IP 时会被抢走直连。
+
+### TUN
+
+默认开启。**如果这台机器是你远程 SSH 管理的**，`route-exclude-address` 必须包含你的
+管理网段（模板已按常见私有网段给全），否则隧道抖动会导致失联；`strict-route` 保持
+`false`，它在 Linux 上相当于自锁开关。
+
+不需要全局代理的话，从 `docker-compose.yml` 删掉 `network_mode`、`cap_add`、`devices` 三处即可。
+
+## 常用操作
+
+```bash
+bash update_subscription.sh        # 改完配置后生效
+tail -f ~/mihomo-update.log        # 自动更新日志
+
+docker compose up -d               # 重建容器（改 compose 后）
+docker compose restart mihomo      # 仅重启
+docker logs mihomo --tail=50
+
+# 查询 API
+SEC=$(sed -n 's/^API_SECRET=//p' vars.env)
+curl -s -H "Authorization: Bearer $SEC" http://127.0.0.1:9090/proxies
+```
 
 ## 文件
 
 | 文件 | 作用 |
 |---|---|
-| `config.template.yaml` | 配置骨架（代理组、DNS、TUN、规则四段），带占位符 |
-| `vars.env` | 占位符的真实取值 —— **自己创建，勿分享**（已在 .gitignore） |
-| `update_subscription.sh` | 渲染 → 校验 → 写盘 → 热重载。**其余脚本的入口** |
-| `sync_airport_rules.sh` | 从订阅里抽取规则、重写策略组名、生成 `airport_rules.inc` |
-| `boot.sh` | 容器入口。目前只做 `exec /mihomo`（见文件内注释说明历史） |
-| `dns-select.sh` | **按需手动**的 DoH 解析器诊断工具（不再是常驻循环） |
-| `airport_rules.inc` | 生成物，不入库 |
-| `docker-compose.yml` | 容器定义（`network_mode: host` + TUN 所需的 cap/device） |
-| `CLAUDE.md` / `MAINTENANCE.md` | 给 AI / 给人的维护文档 |
+| `config.template.yaml` | 配置模板（含占位符） |
+| `vars.env` | 变量取值，不入库 |
+| `update_subscription.sh` | 渲染 → 校验 → 热重载 |
+| `sync_airport_rules.sh` | 抽取机场规则、重写策略组名 |
+| `boot.sh` | 容器入口 |
+| `dns-select.sh` | DoH 解析器诊断工具（手动运行） |
+| `CLAUDE.md` `MAINTENANCE.md` | 维护与排障文档 |
 
-## 规则四段（顺序即优先级）
+## 常见问题
 
-mihomo 是**首个匹配生效**，所以顺序就是语义：
+**为什么要用 `update_subscription.sh` 而不是直接 `envsubst`？**
+`envsubst` 从环境变量取值，而 `vars.env` 的值并未 export 到环境。直接渲染会把所有
+占位符替换成空字符串，代理链断开且不报错。
 
-| 段 | 内容 | 为什么在这个位置 |
-|---|---|---|
-| 1 | 本地/垃圾流量：REJECT 组播广播、内网段直连 | 必须先于任何域名规则；机场对组播写的是 `DIRECT`，本项目要 `REJECT` |
-| 2 | 自有规则：微信直连、AI 域名走代理链 | **必须在机场规则之前**——机场把自己的 `GEOIP,CN,DIRECT` 放在它规则块**末尾**当兜底，若自有规则排其后，AI 域名一旦解析到 CN IP 就会被抢走直连 |
-| 3 | 机场规则（自动生成，保持机场原始顺序） | 顺序有意义：机场是"具体代理规则在前、`GEOIP,CN` 兜底直连在后" |
-| 4 | `cn` / `GEOIP,CN` 直连 + `MATCH,Proxy` | 第 4 段的国内直连是**故意冗余**：万一 `airport_rules.inc` 缺失，也不会让全部流量被 `MATCH,Proxy` 吞进付费出口 |
+**机场规则为什么不用 `rule-providers` 引用？**
+classical 规则集是两字段格式，目标由 `RULE-SET` 统一指定；而机场规则是三字段、
+目标混合（代理 / DIRECT / REJECT 都有）。用 `RULE-SET` 会把 DIRECT 和 REJECT
+的规则错误地送进代理，因此需要逐条内联。
 
-**为什么不用 `rule-providers`**：官方文档里 classical 规则集是**两字段**格式
-（`DOMAIN-SUFFIX,google.com`），目标由主配置的 `RULE-SET,name,target` 统一指定。
-而机场规则是**三字段、目标混合**。走 `RULE-SET` 会把其中所有非代理目标的规则
-（实测 160 条 DIRECT + 27 条 REJECT）**错误地送进代理**。故必须逐条内联。
+**改了 `vars.env` 要重启容器吗？**
+不用。`update_subscription.sh` 会通过 API 热重载。只有改 `docker-compose.yml` 才要重建。
 
-### 策略组名映射（`AIRPORT_GROUP_MAP`）
+**换了机场怎么办？**
+改 `vars.env` 的 `SUBSCRIBE_URL` 和 `AIRPORT_GROUP_MAP`，重新运行 `update_subscription.sh`。
 
-机场规则里的目标指向**机场自己的**策略组，必须重写成本项目存在的组，否则 mihomo 会
-因目标不存在而拒绝整份配置。映射表放在 `vars.env`：
+## 安全提示
 
-```
-AIRPORT_GROUP_MAP=机场主组名=Proxy
-```
+- 本配置需要 `NET_ADMIN` 和 `/dev/net/tun`，容器因此拥有**宿主机的网络控制权**
+  （可改路由表、创建网卡）。这是宿主机级 TUN 的必然代价，请只使用可信镜像。
+- 镜像默认来自第三方源（`docker.1ms.run`）且未固定版本。介意的话改用官方
+  `metacubex/mihomo`，或按 digest 固定（写法见 `docker-compose.yml` 注释）。
+- mixed-port 默认**无认证**。部署在不受信任的网络里请自行添加 `authentication`，
+  否则同网段任何人都能把它当作免费代理使用。
+- `vars.env`、`config.yaml`、`airport_rules.inc` 等已在 `.gitignore` 中，
+  提交前请确认 `git status` 不包含它们。
 
-- 映射到 `Proxy` → 走本项目代理链（第一跳节点池 → 固定出口），保住固定出网身份
-- 映射到 `第一跳节点池` → 直接用机场节点，延迟更低但出网 IP 会随节点变化
+## 许可
 
-> 映射表刻意放在 `vars.env`（不入库）而非代码里 —— 既为脱敏，也让**换机场时只改一行配置**。
-
-### 订阅是不可信输入
-
-规则来自远端订阅，本项目的处理前提是**不可信**。`sync_airport_rules.sh` 因此：
-
-1. 规则**类型**必须在已知白名单内（光校验字符集不够——`1BADTYPE` 这种字符集合法但
-   mihomo 不认识的类型会让整份配置被拒）；
-2. 规则**目标**必须在已知策略组/内置动作白名单内，未知目标**逐条跳过**而非中止
-   （一条畸形规则不该让配置再也无法更新）；
-3. 写入 YAML 时**转义单引号**——否则 payload 里一个 `'` 就能撑破引号边界造成配置注入；
-4. 产出片段要过一遍 **YAML 解析自检**；
-5. 跳过比例 > 5% 视为订阅格式变化或被篡改，**中止不写盘**。
-
-## TUN 全局代理
-
-只靠 `http_proxy` 环境变量不算全局：**不认这个变量的程序、Docker 容器内的流量、
-非 HTTP 协议**都会漏出去直连。TUN 才能接管全部流量。
-
-容器需要 `network_mode: host` + `NET_ADMIN` + `/dev/net/tun` 三样，代价见下方安全说明。
-
-⚠️ **如果你是通过 SSH 远程管理这台机器的，`route-exclude-address` 是安全底线**：
-必须把管理网段排除在 TUN 之外，否则隧道一抖动你就再也连不上、只能物理接触机器。
-模板里已按常见私有网段给全（`10/8`、`172.16/12`、`192.168/16`、`100.64/10` 等）。
-
-两个必须记住的点：
-
-- **`strict-route` 必须为 `false`**。官方文档：Linux 上它会让"不支持的网络不可达"
-  并强制所有连接走 TUN —— 在远程机器上等于**自锁开关**。
-- 验证是否生效，用"**酸测试**"：一个不带任何代理环境变量的程序，应当也能拿到出口 IP。
-  ```bash
-  env -u http_proxy -u https_proxy -u ALL_PROXY -u all_proxy \
-      curl -s https://api.ipify.org     # 应返回你的出口 IP
-  ```
-
-## 渲染流水线的两条硬约束
-
-写这个项目时踩过，记下来免得重踩：
-
-1. **必须原地写入**（`cat tmp > config.yaml`），**绝不能用 `mv`**。
-   `config.yaml` 是以**单文件 bind mount** 方式挂进容器的；`mv` 会换掉 inode，
-   而 bind mount 绑的是原 inode —— **容器侧将永远看不到更新，且不报任何错**。
-2. **写盘发生在热重载之前**，所以必须有闸门：否则一份 mihomo 读不懂的配置会留在磁盘上，
-   容器下次重启直接 crash loop。本项目有三道：关键字段非空 → YAML 解析 → 重载失败自动回滚。
-
-## 定时任务
-
-```
-17 * * * * PATH=...; flock -n /tmp/mihomo_update.lock \
-           /path/to/update_subscription.sh >> ~/mihomo-update.log 2>&1
-```
-
-不需要 root：脚本只写自己的文件 + 调 mihomo HTTP API，不碰 docker。
-`flock` 防重叠；显式给 `PATH`，因为 cron 的 PATH 很窄
-（**注意**：交互 shell 里 `envsubst`/`python3` 常被 conda 等覆盖，
-cron 下会走 `/usr/bin/` —— 两处行为不一致时先怀疑这个）。
-
-## 安全说明
-
-请在使用前读一遍。这个项目为了"宿主机全局代理"付出了实实在在的权限代价。
-
-### 1. 容器拥有宿主机的网络控制权（权限提升）
-
-`network_mode: host` + `cap_add: NET_ADMIN` + `/dev/net/tun` 的组合，
-意味着**容器可以在宿主机上创建/删除网卡、改路由表**。
-已实证：在容器内执行 `ip link add <name> type dummy` 能成功。
-
-换句话说，**这个容器在网络维度上约等于宿主机的 root**。
-这是宿主机级 TUN 的必然代价，没有更小的权限组合能做到。
-
-两条纪律：
-- **只使用你信任的镜像**（见第 2 条）；
-- 不要把这个容器的端口暴露到不受信任的网络。
-
-如果你不需要宿主机全局代理，删掉 compose 里那三处即可。
-
-### 2. 镜像来自第三方源且未固定版本（供应链）
-
-- `docker.1ms.run` 是**第三方镜像源**（为绕开国内拉不到 Docker Hub 的问题），
-  不是官方 registry。理论上它可以返回被替换过的镜像内容。
-  换成官方：`image: metacubex/mihomo:latest`。
-- `:latest` **不可复现、无法审计**。生产环境建议按 **digest 固定**，那样镜像源也无法替换内容：
-  ```yaml
-  image: docker.1ms.run/metacubex/mihomo@sha256:<digest>
-  ```
-  取 digest：`docker image inspect <image> --format '{{index .RepoDigests 0}}'`。
-  代价是内核不再自动更新，需要手动 bump。
-
-### 3. 开放代理与 API 暴露
-
-- 默认**不开** mixed-port 认证（`authentication`）。若部署在不受信任的网络里，
-  **请自行开启**——否则同网段任何人都能把它当免费代理用，消耗你的付费流量、
-  并以你的出口身份发出流量。
-- `external-controller` 默认绑 `0.0.0.0:9090`。API 密钥请用随机长串
-  （`openssl rand -hex 24`），并且**不要把密钥填进第三方托管的前端页面**
-  （那等于把密钥交给那个站点的运营者）；建议本地跑 yacd/metacubexd 或使用镜像自带 dashboard。
-
-### 4. 不要提交密钥
-
-`vars.env`、`config.yaml`、`proxy_provider/lelian_proxies.yaml`、`airport_rules.inc`
-均已列入 `.gitignore`。**提交前请自行确认**：`git status` 里不应出现它们。
-发布/同步前建议做一次凭据审计——用"从 `vars.env` 读出真实值反查待发布文件"的方式，
-比逐条人工看可靠得多（本项目就是这么做的）。
-
-## 许可与免责
-
-本项目只提供配置与脚本，不含任何代理服务或节点。使用前请确认符合你所在地区的法律法规。
+本项目只提供配置与脚本，不含任何代理服务或节点。
